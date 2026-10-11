@@ -28,7 +28,7 @@ env.backends.onnx.wasm!.numThreads = 1
 self.onmessage = async ({data}: MessageEvent<{samples: Float32Array; model: string; language: string; engine: string}>) => {
   try {
     const {samples, model, language, engine} = data
-    const transcriber = await pipeline('automatic-speech-recognition', `Xenova/whisper-${model}`, {
+    const transcriber = await pipeline('automatic-speech-recognition', model === 'large-v3' ? 'onnx-community/whisper-large-v3-ONNX' : `Xenova/whisper-${model}`, {
       device: engine === 'webgpu' ? 'webgpu' : 'wasm',
       dtype: 'q8',
       progress_callback: (progress: {status: string; file?: string; progress?: number}) => {
@@ -42,7 +42,7 @@ self.onmessage = async ({data}: MessageEvent<{samples: Float32Array; model: stri
       const end = Math.min(samples.length, offset + length)
       const output = await transcriber(samples.slice(offset, end), {
         return_timestamps: true,
-        ...(language === 'auto' ? {} : {language: {zh: 'chinese', en: 'english', ja: 'japanese'}[language] || language}),
+        ...(language === 'auto' ? {} : {language: {zh: 'chinese', en: 'english', ja: 'japanese', yue: 'cantonese'}[language] || language}),
         task: 'transcribe',
       })
       const result = (Array.isArray(output) ? output[0] : output) as {text: string; chunks?: {text: string; timestamp: [number | null, number | null]}[]}
@@ -56,5 +56,9 @@ self.onmessage = async ({data}: MessageEvent<{samples: Float32Array; model: stri
     }
     await transcriber.dispose()
     self.postMessage({type: 'done'})
-  } catch (error) {self.postMessage({type: 'error', error: (error as Error).message})}
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    self.postMessage({type: 'error', error: /bad_alloc|out of memory|memory access out of bounds/i.test(message)
+      ? '本机浏览器可用内存不足，请关闭其他标签页、尝试 GPU 引擎或改用较小模型。' : message})
+  }
 }

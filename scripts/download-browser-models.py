@@ -4,16 +4,17 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import urllib.request
+from prepare_browser_model import prepare
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--models', nargs='+', choices=['tiny', 'base', 'small'], default=['tiny', 'base', 'small'])
+parser.add_argument('--models', nargs='+', choices=['tiny', 'base', 'small', 'medium', 'large-v3'], default=['tiny', 'base', 'small', 'medium', 'large-v3'])
 parser.add_argument('--proxy', default=None)
 args = parser.parse_args()
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': args.proxy} if args.proxy else {}))
 root = Path(__file__).resolve().parents[1] / '.browser-models'
 
 for model in args.models:
-    repo = 'Xenova/whisper-' + model
+    repo = 'onnx-community/whisper-large-v3-ONNX' if model == 'large-v3' else 'Xenova/whisper-' + model
     with opener.open('https://huggingface.co/api/models/' + repo, timeout=60) as response:
         metadata = json.load(response)
     revision = metadata['sha']
@@ -38,5 +39,7 @@ for model in args.models:
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(download, names))
+    if model == 'medium':
+        prepare(root / repo / 'onnx/encoder_model_quantized.onnx')
     (root / repo / 'source.json').write_text(json.dumps({'repository': repo, 'revision': revision}))
 print('Public browser models ready in ' + str(root))

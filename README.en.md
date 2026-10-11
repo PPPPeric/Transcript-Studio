@@ -27,8 +27,10 @@ Current quantized models and supporting files, measured in decimal MB:
 | tiny | About 45 MB | Quick previews |
 | base | About 81 MB | Clear recordings; a good starting point |
 | small | About 254 MB | More accurate drafts; higher memory use |
+| medium | About 780 MB | Complex recordings; slower and more memory-intensive |
+| large-v3 | About 1.83 GB | Accuracy priority, optional Cantonese; highest memory use |
 
-All three total about 380 MB. The browser loads the selected model. Initial use also downloads the ONNX runtime; media that cannot be decoded natively additionally loads the FFmpeg runtime. Download size is not runtime memory use. Medium and large-v3 are not offered in this browser version.
+All five total about 2.99 GB. The browser loads the selected model. Initial use also downloads the ONNX runtime; media that cannot be decoded natively additionally loads the FFmpeg runtime. Download size is not runtime memory use. If a large model cannot load, try a smaller one. Preparation removes unused attention matrix outputs from the medium encoder to avoid several GB of unnecessary browser memory use; model weights remain unchanged.
 
 The host prepares the model assets from Hugging Face before serving them. Visiting browsers use same-origin assets and do not need direct access to external model websites.
 
@@ -43,7 +45,7 @@ The import action reads files locally. The default host serves static resources,
 ## Editor features
 
 - **Import:** Native browser decoding, with local FFmpeg WebAssembly fallback to extract the first audio track. Audio becomes mono 16 kHz WAV. Input files are limited to 1 GB; practical limits depend on memory and storage quota.
-- **Transcription:** Browser CPU by default, with experimental GPU support. Chinese, English, Japanese, and automatic language detection are available.
+- **Transcription:** Browser CPU by default, with experimental GPU support. Chinese, English, Japanese, and automatic language detection are available; large-v3 also offers Cantonese. Large models require more memory and processing time. Settings scroll independently to keep controls accessible in short windows.
 - **Playback and editing:** Playback speed, 5-second jumps, waveform zoom, playback highlighting, search, undo/redo, paragraph boundaries, and speaker labels. Click text to play; double-click to edit. Changes autosave after roughly 0.9 seconds.
 - **History:** Retains up to 30 revisions. Restoring a revision also preserves the previous content. Editing is disabled during transcription.
 - **Stop:** Terminates the worker in the window that started the task and retains persisted segments. Closing the page interrupts inference; reopening marks the task interrupted. Inference does not continue in the background.
@@ -123,7 +125,7 @@ npm run test:browser
 
 Builds check TypeScript and copy the local ONNX and FFmpeg runtimes. A build without models prints a notice; deployment scripts prepare models first. For frontend development, `npm run dev` proxies `/models` and `/runtime` to the static service on localhost port 8001.
 
-Browser tests cover persistence after reload, editing, revision restore, Markdown/SRT exports, project backup restore, browser isolation, absence of uploads/API requests, and rejection of uploads/private file access by the host. Set `LTS_TEST_AUDIO` to an absolute path to a synthetic speech WAV to enable real Whisper inference and cancellation tests; prepare models first. `LTS_TEST_CHROME` can select an existing Chrome executable. Manual browser validation also covered MKV audio extraction. GitHub Actions retains legacy backend tests and runs the browser regression suite.
+Browser tests cover persistence after reload, editing, revision restore, Markdown/SRT exports, project backup restore, browser isolation, absence of uploads/API requests, and rejection of uploads/private file access by the host. Set `LTS_TEST_AUDIO` to an absolute path to a synthetic speech WAV to enable real Whisper inference and cancellation tests; prepare models first. `LTS_TEST_MODEL=medium` or `LTS_TEST_MODEL=large-v3` selects the inference test model. `LTS_TEST_CHROME` can select an existing Chrome executable. Manual browser validation also covered MKV audio extraction. GitHub Actions retains legacy backend tests and runs the browser regression suite.
 
 ## Limitations
 
@@ -136,6 +138,6 @@ Browser tests cover persistence after reload, editing, revision restore, Markdow
 
 ## License and earlier design notes
 
-Project code is [MIT licensed](LICENSE). Third-party runtimes and models retain their respective licenses. Model source revisions are recorded in `.browser-models/Xenova/whisper-*/source.json`, with model cards saved alongside the files.
+Project code is [MIT licensed](LICENSE). Third-party runtimes and models retain their respective licenses. Model source revisions are recorded in `.browser-models/<model-repository>/source.json`, with model cards saved alongside the files.
 
 `PACKAGING_PLAN.md` and `PYTORCH_RUNTIME_TEST.md` document the earlier desktop/Python approach and do not describe the current browser deployment.

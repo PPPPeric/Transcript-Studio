@@ -94,7 +94,11 @@ main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .controls label { color: #8392a6; font-size: 11px; white-space: nowrap; }
 .controls select { margin-left: 3px; }
 select { border: 1px solid #dce4ee; border-radius: 7px; background: #fff; color: #40536d; padding: 7px 8px; font-size: 12px; }
-.transcribe-card { padding: 0; overflow: hidden; }
+.transcribe-card { display: flex; flex-direction: column; padding: 0; overflow: hidden; min-height: 0; }
+.project-open .audio-column { overflow: hidden; }
+.audio-card { flex: none; }
+.transcribe-card { flex: 1 1 auto; }
+.transcribe-toggle { flex: none; }
 .transcribe-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 56px; padding: 12px 15px; border: 0; background: #fff; color: #263850; text-align: left; }
 .transcribe-toggle:disabled { opacity: 1; cursor: default; }
 .transcribe-toggle span:first-child { display: flex; flex-direction: column; gap: 3px; }
@@ -102,7 +106,7 @@ select { border: 1px solid #dce4ee; border-radius: 7px; background: #fff; color:
 .transcribe-toggle small { color: #97a5b6; font-size: 11px; }
 .chevron { color: #8aa0ba; transition: transform .15s ease; }
 .chevron.open { transform: rotate(180deg); }
-.settings-body { padding: 14px 15px 16px; border-top: 1px solid #eef1f5; }
+.settings-body { padding: 14px 15px 16px; border-top: 1px solid #eef1f5; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .transcribe-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .transcribe-controls label { display: flex; flex-direction: column; gap: 5px; min-width: 0; color: #73849a; font-size: 11px; }
 .transcribe-controls label:first-child { grid-column: 1 / -1; }
@@ -219,7 +223,8 @@ select { border: 1px solid #dce4ee; border-radius: 7px; background: #fff; color:
   .workspace { grid-template-columns: 1fr; }
   .project-open .workspace { display: flex; flex-direction: column; }
   .audio-column { position: static; max-height: none; overflow: visible; }
-  .project-open .audio-column { flex: none; max-height: 40vh; overflow-y: auto; }
+  .project-open .audio-column { flex: none; max-height: 50dvh; overflow-y: auto; }
+  .project-open .transcribe-card { flex: none; max-height: 35dvh; }
   .project-open .transcript { flex: 1; }
   .transcript { padding: 0 0 16px; }
   .transcript-head { padding: 15px 16px 13px; }

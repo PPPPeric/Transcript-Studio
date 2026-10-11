@@ -55,7 +55,7 @@ let initialized: Promise<void> | undefined
 const initialize = () => initialized ||= recovery()
 
 async function start(id: string, options: {model: string; language: string; engine: string}): Promise<Project> {
-  if (!['tiny', 'base', 'small'].includes(options.model)) throw new Error('请选择浏览器支持的 tiny、base 或 small 模型')
+  if (!['tiny', 'base', 'small', 'medium', 'large-v3'].includes(options.model)) throw new Error('请选择支持的转写模型')
   if (worker) throw new Error('请先完成或终止当前转写')
   return new Promise((resolve, reject) => {
     void navigator.locks.request('lts-transcription', {ifAvailable: true}, async available => {

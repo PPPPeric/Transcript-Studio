@@ -12,11 +12,14 @@ for tool in "$LTS_SITE_PYTHON" node npm; do
   command -v "$tool" >/dev/null || {echo "缺少 $tool，请先安装宿主机依赖"; exit 1;}
 done
 export NPM_CONFIG_CACHE="$PWD/.npm-cache"
-for model in tiny base small; do
-  if [[ ! -f ".browser-models/Xenova/whisper-$model/onnx/decoder_model_merged_quantized.onnx" || ! -f ".browser-models/Xenova/whisper-$model/onnx/encoder_model_quantized.onnx" ]]; then
+for model in tiny base small medium large-v3; do
+  MODEL_REPO="Xenova/whisper-$model"
+  [[ "$model" != large-v3 ]] || MODEL_REPO="onnx-community/whisper-large-v3-ONNX"
+  if [[ ! -f ".browser-models/$MODEL_REPO/onnx/decoder_model_merged_quantized.onnx" || ! -f ".browser-models/$MODEL_REPO/onnx/encoder_model_quantized.onnx" ]]; then
     "$LTS_SITE_PYTHON" scripts/download-browser-models.py --models "$model" --proxy "${LTS_MODEL_PROXY:-}"
   fi
 done
+"$LTS_SITE_PYTHON" scripts/prepare_browser_model.py .browser-models/Xenova/whisper-medium/onnx/encoder_model_quantized.onnx
 FRONTEND_HASH=$(cat frontend/package.json frontend/package-lock.json | shasum -a 256 | cut -d ' ' -f 1)
 if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -f frontend/node_modules/.deps-hash || "$(cat frontend/node_modules/.deps-hash)" != "$FRONTEND_HASH" ]]; then
   (cd frontend && npm ci --include=dev)
