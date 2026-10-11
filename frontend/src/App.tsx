@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import WaveSurfer from 'wavesurfer.js'
+import ProgressDialog from './ProgressDialog'
+import {reportProgress, finishProgress, type TaskProgress} from './progress'
 
 import {localApi as api, audioUrl, exportTranscript, backupProject, restoreBackup, deleteProject} from './local-client'
 import type {Segment, Project, Version} from './local-types'
@@ -65,6 +67,9 @@ export default function App() {
   const [model, setModel] = useState('base')
   const [language, setLanguage] = useState('zh')
   const [busy, setBusy] = useState(false)
+  const [importProgress, setImportProgress] = useState<TaskProgress | null>(null)
+  const [modelProgress, setModelProgress] = useState<TaskProgress | null>(null)
+  const [hiddenProgress, setHiddenProgress] = useState<{import: boolean; model: boolean}>({import: false, model: false})
   const [message, setMessage] = useState('')
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -126,9 +131,16 @@ export default function App() {
   useEffect(() => {
     const onError = (event: Event) => setMessage((event as CustomEvent<string>).detail)
     window.addEventListener('lts-error', onError)
+    const onProgress = (event: Event) => {
+      const data = (event as CustomEvent<TaskProgress & {finished?: boolean}>).detail
+      if (data.start) setHiddenProgress(previous => ({...previous, [data.kind]: false}))
+      if (data.kind === 'import') setImportProgress(data.finished ? null : data)
+      else setModelProgress(data.finished ? null : data)
+    }
+    window.addEventListener('lts-progress', onProgress)
     refreshList()
     api<Health>('/api/health').then(value => {setHealth(value); setEngine('wasm')}).catch(error => setMessage(error.message))
-    return () => window.removeEventListener('lts-error', onError)
+    return () => {window.removeEventListener('lts-error', onError); window.removeEventListener('lts-progress', onProgress)}
   }, [])
 
   const openProject = async (id: string) => {
@@ -227,22 +239,24 @@ export default function App() {
     if (dirtyRef.current && !confirm('有未保存的修改。确定导入新项目？')) return
     const video = file.type.startsWith('video/') || /\.(mp4|mov|m4v|mkv|webm|avi)$/i.test(file.name)
     setBusy(true); setMessage(video ? '正在导入视频并提取音轨…' : '正在导入和处理音频…')
+    reportProgress({kind: 'import', stage: file.name.endsWith('.lts') ? '读取本机项目备份' : '读取本机文件', detail: file.name, start: true})
     try {
       const data = new FormData(); data.append('file', file)
       const next = file.name.endsWith('.lts') ? await restoreBackup(file) : await api<Project>('/api/projects', {method: 'POST', body: data})
       await refreshList(); generation.current++; dirtyRef.current = false; setDirty(false); setSelectedSegmentId(null); setEditingSegmentId(null); setSettingsOpen(true); setSearch(''); setVersionsOpen(false); setZoomWindow(0); zoomWindowRef.current = 0; resetLocalHistory(); update(next); setMessage(next.source_kind === 'video' ? '视频音轨提取完成，可以开始转写' : '导入完成，可以开始转写')
     } catch (error) {setMessage((error as Error).message)}
-    finally {setBusy(false); if (fileRef.current) fileRef.current.value = ''}
+    finally {finishProgress('import'); setBusy(false); if (fileRef.current) fileRef.current.value = ''}
   }
 
   const transcribe = async () => {
     if (!project) return
     if (project.segments.length && !confirm('重新转写会替换当前文字稿，确定继续？')) return
     setBusy(true); setMessage('正在启动转写…')
+    reportProgress({kind: 'model', stage: '准备本机转写', start: true})
     try {
       const next = await api<Project>(`/api/projects/${project.id}/transcribe`, {method: 'POST', ...json({engine, model, language})})
       setSelectedSegmentId(null); setEditingSegmentId(null); setSettingsOpen(true); setVersionsOpen(false); resetLocalHistory(); update(next); refreshList(); setMessage('转写已开始，文字会逐段显示。')
-    } catch (error) {setMessage((error as Error).message)}
+    } catch (error) {finishProgress('model'); setMessage((error as Error).message)}
     finally {setBusy(false)}
   }
 
@@ -450,6 +464,8 @@ export default function App() {
       </main>
     </div>
     {drag && <div className="drop-overlay" aria-hidden="true"><div>将音频或视频放到这里导入</div></div>}
+    {importProgress && !hiddenProgress.import ? <ProgressDialog progress={importProgress} onHide={() => setHiddenProgress(previous => ({...previous, import: true}))}/>
+      : modelProgress && !hiddenProgress.model ? <ProgressDialog progress={modelProgress} onHide={() => setHiddenProgress(previous => ({...previous, model: true}))}/> : null}
     {message && <div className="toast" role="status">{message}<button onClick={() => setMessage('')}>×</button></div>}
   </div>
 }

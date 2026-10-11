@@ -1,4 +1,5 @@
 import {importAudio, decode} from './audio'
+import {reportProgress, finishProgress, type TaskProgress} from './progress'
 import type {Project, Segment} from './local-types'
 
 const database = new Promise<IDBDatabase>((resolve, reject) => {
@@ -64,6 +65,7 @@ async function start(id: string, options: {model: string; language: string; engi
       let complete: Promise<void>
       try {
         const audio = await audioBlob(id)
+        reportProgress({kind: 'model', stage: '准备本机音频', start: true})
         const samples = await decode(audio)
         const project = await lock(async () => {
           const current = await read(id)
@@ -77,7 +79,10 @@ async function start(id: string, options: {model: string; language: string; engi
         activeId = id
         worker = new Worker(new URL('./transcribe.worker.ts', import.meta.url), {type: 'module'})
         complete = new Promise<void>(done => {finishJob = done})
-        const update = (data: {type: string; text?: string; error?: string; progress?: number; segments?: Omit<Segment, 'id'>[]}) => {
+        const update = (data: {type: string; text?: string; error?: string; progress?: number; download?: TaskProgress; segments?: Omit<Segment, 'id'>[]}) => {
+          if (data.type === 'model') reportProgress(data.download || {kind: 'model', stage: data.text || '加载模型'})
+          if (['model-ready', 'chunk', 'done', 'error'].includes(data.type)) finishProgress('model')
+          if (data.type === 'model-ready') return
           queue = queue.then(() => lock(async () => {
             const current = await read(id)
             if (current.runId !== runId || !['queued', 'transcribing'].includes(current.status)) return
@@ -114,7 +119,7 @@ async function start(id: string, options: {model: string; language: string; engi
         }).catch(() => undefined)
         reject(error)
       }
-      finally {worker?.terminate(); worker = undefined; activeId = undefined; finishJob = undefined}
+      finally {finishProgress('model'); worker?.terminate(); worker = undefined; activeId = undefined; finishJob = undefined}
     }).catch(reject)
   })
 }
@@ -144,6 +149,7 @@ export async function localApi<T>(url: string, init?: RequestInit): Promise<T> {
       revision: 0, segments: [], progress: 0, duration, events: [], versions: [],
       source_kind: file.type.startsWith('video/') || /\.(mp4|mov|m4v|mkv|webm|avi)$/i.test(file.name) ? 'video' : 'audio'}
     event(project, 'imported', '音频已导入本机浏览器')
+    reportProgress({kind: 'import', stage: '保存到本机浏览器'})
     await transaction(['projects', 'audio'], 'readwrite', tx => {
       tx.objectStore('audio').put(audio, project.id)
       return tx.objectStore('projects').put(project)

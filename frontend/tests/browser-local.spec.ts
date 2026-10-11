@@ -1,5 +1,5 @@
 import {test, expect} from '@playwright/test'
-import {zipSync, strToU8} from 'fflate'
+import {zipSync, unzipSync, strToU8} from 'fflate'
 import {readFile} from 'node:fs/promises'
 
 // Synthetic local audio and transcript; never use private recordings as fixtures.
@@ -78,7 +78,7 @@ test('all five models show download sizes and settings scroll independently on s
   const settings = page.getByRole('region', {name: '转写设置内容'})
   await expect.poll(() => settings.evaluate(el => el.scrollHeight > el.clientHeight)).toBeTruthy()
   const before = await page.locator('.audio-card').boundingBox()
-  await settings.hover()
+  await settings.hover({position: {x: 8, y: 20}})
   await page.mouse.wheel(0, 1500)
   await expect.poll(() => settings.evaluate(el => el.scrollTop)).toBeGreaterThan(0)
   const button = await page.getByRole('button', {name:'重新转写', exact:true}).boundingBox()
@@ -86,10 +86,45 @@ test('all five models show download sizes and settings scroll independently on s
   expect((await page.locator('.audio-card').boundingBox())!.y).toBe(before!.y)
 })
 
+test('local audio import shows real byte progress and closes on completion or failure', async ({page, context}) => {
+  const uploads: string[] = []
+  context.on('request', request => {if (!['GET', 'HEAD'].includes(request.method())) uploads.push(request.url())})
+  // Hold the real FileReader completion briefly so the intermediate dialog can be inspected.
+  await page.addInitScript(() => {
+    const read = FileReader.prototype.readAsArrayBuffer
+    FileReader.prototype.readAsArrayBuffer = function(blob) {
+      const complete = this.onload
+      this.onload = event => {setTimeout(() => complete?.call(this, event), 1200)}
+      read.call(this, blob)
+    }
+  })
+  await page.goto('/')
+  await page.locator('input[type=file]').setInputFiles({name: 'local.wav', mimeType: 'audio/wav', buffer: Buffer.from(unzipSync(fixture())['audio.wav'])})
+  const dialog = page.getByRole('dialog', {name: '导入音视频'})
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('progressbar', {name: '导入进度'})).toHaveAttribute('value', '100')
+  await expect(dialog).toContainText('录音不会上传')
+  await expect(dialog).not.toBeVisible()
+  await expect(page.locator('.status-chip')).toHaveText('待转写')
+  await page.locator('input[type=file]').setInputFiles({name: 'invalid.lts', mimeType: 'application/zip', buffer: Buffer.from('invalid backup')})
+  await expect(page.getByRole('dialog')).not.toBeVisible()
+  await expect(page.locator('.toast')).not.toContainText('正在导入')
+  expect(uploads).toEqual([])
+})
+
 test('optional real Whisper inference with a supplied synthetic speech fixture', async ({page, context}) => {
   test.setTimeout(300000)
   test.skip(!process.env.LTS_TEST_AUDIO, 'Set LTS_TEST_AUDIO to a synthetic speech WAV')
   page.on('console', message => {if (message.type() === 'error') console.error(message.text())})
+  await page.addInitScript(() => {
+    const progress: {kind: string; loaded?: number; percent?: number}[] = []
+    Object.assign(window, {testProgress: progress})
+    window.addEventListener('lts-progress', event => progress.push((event as CustomEvent).detail))
+  })
+  await page.route('**/encoder_model_quantized.onnx', async route => {
+    await new Promise(resolve => setTimeout(resolve, 600))
+    await route.continue()
+  })
   const uploads: string[] = []
   context.on('request', request => {if (!['GET', 'HEAD'].includes(request.method())) uploads.push(request.url())})
   await page.goto('/')
@@ -99,13 +134,17 @@ test('optional real Whisper inference with a supplied synthetic speech fixture',
   await page.locator('.transcribe-controls select').nth(1).selectOption(process.env.LTS_TEST_MODEL || 'tiny')
   await page.locator('.transcribe-controls select').nth(2).selectOption('en')
   await page.getByRole('button', {name:'开始转写',exact:true}).click()
+  await expect(page.getByRole('dialog', {name: '准备转写模型'})).toBeVisible()
   await expect(page.locator('.status-chip')).toHaveText(/已转写|转写失败/, {timeout: 240000})
   if (await page.locator('.status-chip').textContent() === '转写失败' && await page.locator('.transcribe-toggle').getAttribute('aria-expanded') === 'false') await page.locator('.transcribe-toggle').click()
   expect(await page.locator('.status-chip').textContent(), await page.locator('.error').allTextContents().then(lines => lines.join('\n'))).toBe('已转写')
+  await expect(page.getByRole('dialog')).not.toBeVisible()
+  expect(await page.evaluate(() => (window as unknown as {testProgress: {kind: string; loaded?: number; percent?: number}[]}).testProgress.some(p => p.kind === 'model' && (p.loaded || 0) > 0 && p.percent !== undefined))).toBeTruthy()
   await expect(page.locator('.text-fragment').first()).not.toBeEmpty()
   page.on('dialog', dialog => dialog.accept())
   await page.locator('.transcribe-toggle').click()
   await page.getByRole('button', {name:'重新转写',exact:true}).click()
+  await page.getByRole('button', {name: '收起进度弹窗'}).click()
   await page.getByRole('button', {name:'终止转写',exact:true}).click()
   await expect(page.locator('.status-chip')).toHaveText('已终止')
   await page.reload()

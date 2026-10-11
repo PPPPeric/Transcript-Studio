@@ -32,6 +32,8 @@ Current quantized models and supporting files, measured in decimal MB:
 
 All five total about 2.99 GB. The browser loads the selected model. Initial use also downloads the ONNX runtime; media that cannot be decoded natively additionally loads the FFmpeg runtime. Download size is not runtime memory use. If a large model cannot load, try a smaller one. Preparation removes unused attention matrix outputs from the medium encoder to avoid several GB of unnecessary browser memory use; model weights remain unchanged.
 
+Media imports and model preparation show a progress dialog. Local file reading, video audio extraction, and model downloads report measured progress; downloads also show loaded and total bytes. Decoding, resampling, saving, and model initialization show their current stage without invented percentages. Cache reads are labeled separately from downloads. Hide the dialog to continue using the page while processing continues; it closes automatically on completion or failure.
+
 The host prepares the model assets from Hugging Face before serving them. Visiting browsers use same-origin assets and do not need direct access to external model websites.
 
 ## Storage and privacy
