@@ -1,21 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 
-type Segment = {id: number; start: number; end: number; text: string; paragraphStart?: boolean; speaker?: string}
-type EventRecord = {kind: string; at: string; label: string}
-type Version = {revision: number; at: string; label: string; preview: string}
-type Project = {id: string; name: string; status: string; error: string | null; revision: number; segments: Segment[]; progress?: number; duration?: number; events?: EventRecord[]; source_kind?: 'audio' | 'video'}
+import {localApi as api, audioUrl, exportTranscript, backupProject, restoreBackup, deleteProject} from './local-client'
+import type {Segment, Project, Version} from './local-types'
 type Summary = Pick<Project, 'id' | 'name' | 'status'>
-type Health = {engines: {mlx: boolean; faster: boolean}; apple_silicon: boolean; ffmpeg: boolean}
+type Health = {webgpu: boolean; storage: boolean}
 
-const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(url, init)
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}))
-    throw new Error(error.detail || `请求失败 (${response.status})`)
-  }
-  return response.json()
-}
 const json = (data: unknown) => ({headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)})
 const clock = (value: number) => {
   const n = Math.floor(value || 0)
@@ -24,11 +14,9 @@ const clock = (value: number) => {
 const eventTime = (value: string) => new Date(value).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false})
 const statusText = (status: string) => ({ready: '待转写', queued: '准备转写', transcribing: '转写中', cancelling: '正在终止', cancelled: '已终止', done: '已转写', error: '转写失败'}[status] || status)
 const modelChoices = [
-  {id: 'tiny', label: 'tiny · 快速预览', size: '约 75 MB', tradeoff: '最快 · 校对较多', description: '适合先了解内容大意；细节、专有词通常需要更多人工校对。'},
-  {id: 'base', label: 'base · 清晰录音', size: '约 145 MB', tradeoff: '较快 · 轻量', description: '适合清晰录音的快速初稿，仍建议逐段检查。'},
-  {id: 'small', label: 'small · 日常推荐', size: '约 480 MB', tradeoff: '速度与准确率较均衡', description: '建议日常使用；通常比小模型省些校对时间。'},
-  {id: 'medium', label: 'medium · 复杂录音', size: '约 1.5 GB', tradeoff: '较慢 · 更占内存', description: '口音或背景噪声较明显时可以尝试，处理时间更长。'},
-  {id: 'large-v3', label: 'large-v3 · 精度优先', size: '约 3.1 GB', tradeoff: '最慢 · 内存需求最高', description: '适合难辨的录音，通常能减少错漏，但不能保证每句话都准确。'},
+  {id: 'tiny', label: 'tiny · 快速预览', size: '以下载进度为准', tradeoff: '最快 · 校对较多', description: '适合先了解内容大意；细节、专有词通常需要更多人工校对。'},
+  {id: 'base', label: 'base · 清晰录音', size: '以下载进度为准', tradeoff: '较快 · 轻量', description: '适合清晰录音的快速初稿，仍建议逐段检查。'},
+  {id: 'small', label: 'small · 日常推荐', size: '以下载进度为准', tradeoff: '速度与准确率较均衡', description: '建议日常使用；通常比小模型省些校对时间。'},
 ] as const
 
 function paragraphs(segments: Segment[]): Segment[][] {
@@ -71,7 +59,7 @@ export default function App() {
   const [list, setList] = useState<Summary[]>([])
   const [project, setProject] = useState<Project | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
-  const [engine, setEngine] = useState<'mlx' | 'faster'>('mlx')
+  const [engine, setEngine] = useState<'webgpu' | 'wasm'>('wasm')
   const [model, setModel] = useState('base')
   const [language, setLanguage] = useState('zh')
   const [busy, setBusy] = useState(false)
@@ -134,8 +122,11 @@ export default function App() {
   }
 
   useEffect(() => {
+    const onError = (event: Event) => setMessage((event as CustomEvent<string>).detail)
+    window.addEventListener('lts-error', onError)
     refreshList()
-    api<Health>('/api/health').then(value => {setHealth(value); setEngine(value.engines.mlx ? 'mlx' : 'faster')}).catch(error => setMessage(error.message))
+    api<Health>('/api/health').then(value => {setHealth(value); setEngine('wasm')}).catch(error => setMessage(error.message))
+    return () => window.removeEventListener('lts-error', onError)
   }, [])
 
   const openProject = async (id: string) => {
@@ -148,10 +139,13 @@ export default function App() {
 
   useEffect(() => {
     if (!projectId || !waveRef.current) return
-    const ws = WaveSurfer.create({container: waveRef.current, url: `/api/projects/${projectId}/audio`,
+    const ws = WaveSurfer.create({container: waveRef.current,
       waveColor: '#a6b7c8', progressColor: '#2563dc', cursorColor: '#173b70', height: 100,
       barWidth: 2, barGap: 1, barRadius: 2})
     wsRef.current = ws
+    let disposed = false
+    let blobUrl = ''
+    audioUrl(projectId).then(url => {if (disposed) {URL.revokeObjectURL(url); return}; blobUrl = url; return ws.load(url)}).catch(error => {if (!disposed) setMessage(error.message)})
     let lastUiTime = -1
     ws.on('ready', () => {
       setDuration(ws.getDuration()); ws.setPlaybackRate(speed)
@@ -164,7 +158,7 @@ export default function App() {
     ws.on('play', () => setPlaying(true))
     ws.on('pause', () => setPlaying(false))
     ws.on('error', error => setMessage(`音频加载失败：${error.message}`))
-    return () => {ws.destroy(); wsRef.current = null; setPlaying(false); setTime(0); setDuration(0)}
+    return () => {disposed = true; if (blobUrl) URL.revokeObjectURL(blobUrl); ws.destroy(); wsRef.current = null; setPlaying(false); setTime(0); setDuration(0)}
   }, [projectId])
 
   useEffect(() => {
@@ -227,14 +221,14 @@ export default function App() {
   }
 
   const upload = async (file?: File) => {
-    if (!file) return
+    if (!file || busy) return
     if (dirtyRef.current && !confirm('有未保存的修改。确定导入新项目？')) return
     const video = file.type.startsWith('video/') || /\.(mp4|mov|m4v|mkv|webm|avi)$/i.test(file.name)
     setBusy(true); setMessage(video ? '正在导入视频并提取音轨…' : '正在导入和处理音频…')
     try {
       const data = new FormData(); data.append('file', file)
-      const next = await api<Project>('/api/projects', {method: 'POST', body: data})
-      await refreshList(); setSelectedSegmentId(null); setEditingSegmentId(null); setSettingsOpen(true); setSearch(''); setVersionsOpen(false); setZoomWindow(0); zoomWindowRef.current = 0; resetLocalHistory(); update(next); setMessage(next.source_kind === 'video' ? '视频音轨提取完成，可以开始转写' : '导入完成，可以开始转写')
+      const next = file.name.endsWith('.lts') ? await restoreBackup(file) : await api<Project>('/api/projects', {method: 'POST', body: data})
+      await refreshList(); generation.current++; dirtyRef.current = false; setDirty(false); setSelectedSegmentId(null); setEditingSegmentId(null); setSettingsOpen(true); setSearch(''); setVersionsOpen(false); setZoomWindow(0); zoomWindowRef.current = 0; resetLocalHistory(); update(next); setMessage(next.source_kind === 'video' ? '视频音轨提取完成，可以开始转写' : '导入完成，可以开始转写')
     } catch (error) {setMessage((error as Error).message)}
     finally {setBusy(false); if (fileRef.current) fileRef.current.value = ''}
   }
@@ -300,10 +294,12 @@ export default function App() {
   }
   useEffect(() => () => {if (pendingJump.current) clearTimeout(pendingJump.current)}, [])
   const exportFile = async (format: string) => {
+    try {
     if (!project) return
     if (savingRef.current) while (savingRef.current) await new Promise(resolve => setTimeout(resolve, 100))
     if (dirtyRef.current) {await saveRef.current(); if (dirtyRef.current) return}
-    location.href = `/api/projects/${project.id}/export/${format}`
+    await exportTranscript(project.id, format, paragraphs)
+    } catch (error) {setMessage((error as Error).message)}
   }
   const restoreVersion = async (revision: number) => {
     if (!projectRef.current || !confirm(`恢复版本 ${revision} 的文字稿？当前内容会先保存到历史记录。`)) return
@@ -321,6 +317,12 @@ export default function App() {
   const status = project?.status
   const transcribing = status === 'queued' || status === 'transcribing' || status === 'cancelling'
   useEffect(() => {if (status === 'done') setSettingsOpen(false)}, [status])
+  useEffect(() => {
+    if (!transcribing && !dirty) return
+    const warn = (event: BeforeUnloadEvent) => {event.preventDefault(); event.returnValue = ''}
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [transcribing, dirty])
   const percent = Math.max(0, Math.min(100, Math.floor(project?.progress ?? (status === 'done' ? 100 : 0))))
   const active = project?.segments.reduce<Segment | undefined>((best, segment) => {
     if (time < segment.start || time >= segment.end) return best
@@ -397,18 +399,18 @@ export default function App() {
   const selectedModel = modelChoices.find(choice => choice.id === model) ?? modelChoices[1]
 
   return <div className={`app ${project ? 'project-open' : ''}`} onDragOver={event => {if (event.dataTransfer.types.includes('Files')) {event.preventDefault(); setDrag(true)}}} onDragLeave={event => {if (!event.currentTarget.contains(event.relatedTarget as Node)) setDrag(false)}} onDrop={event => {event.preventDefault(); setDrag(false); upload(event.dataTransfer.files[0])}}>
-    <header className="app-header"><div className="brand"><span className="brand-mark">LLJ</span><div><h1>Transcript Studio</h1><p>本地转写 · 聆听 · 校对</p></div></div><button className="import-button" onClick={() => fileRef.current?.click()} disabled={busy}>＋ 导入音频或视频</button></header>
+    <header className="app-header"><div className="brand"><span className="brand-mark">LLJ</span><div><h1>Transcript Studio</h1><p>浏览器本地转写 · 录音不会上传</p></div></div><button className="import-button" onClick={() => fileRef.current?.click()} disabled={busy}>＋ 导入音频或视频</button></header>
     <div className="layout">
       <aside className={`sidebar ${project ? 'has-project' : ''}`}>
         <div className="panel-heading"><h2>录音项目</h2><span>{list.length}</span></div>
-        <input ref={fileRef} type="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.opus,.mp4,.mov,.m4v,.mkv,.webm,.avi" hidden onChange={event => upload(event.target.files?.[0])}/>
-        {!project && <div className="drop" onClick={() => fileRef.current?.click()} role="button" tabIndex={0} onKeyDown={event => {if (event.key === 'Enter') fileRef.current?.click()}}>将音频或视频拖到这里<br/><small>或点击选择文件 · 上限 1 GB</small></div>}
+        <input ref={fileRef} type="file" accept=".lts,audio/*,video/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.opus,.mp4,.mov,.m4v,.mkv,.webm,.avi" hidden onChange={event => upload(event.target.files?.[0])}/>
+        {!project && <div className="drop" onClick={() => fileRef.current?.click()} role="button" tabIndex={0} onKeyDown={event => {if (event.key === 'Enter') fileRef.current?.click()}}>将音频或视频拖到这里<br/><small>或选择文件 / .lts 项目备份 · 上限 1 GB</small></div>}
         <div className="project-list">{list.map(item => <button key={item.id} title={item.name} className={projectId === item.id ? 'selected' : ''} onClick={() => openProject(item.id)}><strong>{item.name}</strong><small>{statusText(item.status)}</small></button>)}</div>
-        <details className="requirements"><summary><span className={`health-dot ${health?.ffmpeg && (health.engines.mlx || health.engines.faster) ? 'ready' : ''}`}/>本机状态</summary><div><small>FFmpeg：{health?.ffmpeg ? '就绪' : '未安装'}</small><small>MLX Whisper：{health?.engines.mlx ? '就绪' : '不可用'}</small><small>faster-whisper：{health?.engines.faster ? '就绪' : '不可用'}</small></div></details>
+        <details className="requirements"><summary><span className={`health-dot ${health?.storage ? 'ready' : ''}`}/>本机浏览器状态</summary><div><small>本地存储：{health?.storage ? '就绪' : '不可用'}</small><small>WebGPU：{health?.webgpu ? '可尝试 GPU 加速' : '不可用，使用 CPU'}</small><small>录音、文字稿和历史版本仅保存在当前浏览器，不会同步到其他电脑。首次转写需要下载模型。</small><small>建议使用新版 Chrome / Edge。清除网站数据会删除项目，请定期导出项目备份。</small></div></details>
       </aside>
       <main>
-        {!project ? <div className="empty"><div className="empty-icon">♪</div><h2>从一段音频或视频开始</h2><p>导入 MP3、M4A、WAV 或 MP4、MOV 等文件。视频会先在本机提取音轨，再开始转写。</p></div> : <>
-          <section className="project-toolbar"><div className="project-identity"><span className="eyebrow">当前{project.source_kind === 'video' ? '视频' : '录音'}</span><div className="project-name"><h2 title={project.name}>{project.name}</h2><span className={`status-chip ${status}`}>{statusText(project.status)}</span></div><small>{clock(duration || project.duration || 0)} · {project.segments.length} 个时间片段{project.source_kind === 'video' ? ' · 已提取音轨' : ''}</small></div><div className="exports"><span>导出文字稿</span>{([{format: 'md', label: 'Markdown'}, {format: 'srt', label: 'SRT 字幕'}] as const).map(({format, label}) => <button key={format} onClick={() => exportFile(format)} title={`导出 ${label}`}>{label}</button>)}</div></section>
+        {!project ? <div className="empty"><div className="empty-icon">♪</div><h2>从一段音频或视频开始</h2><p>导入 MP3、M4A、WAV 或 MP4、MOV 等文件。文件在当前电脑解码并转写，不会上传到 Mac mini。</p></div> : <>
+          <section className="project-toolbar"><div className="project-identity"><span className="eyebrow">当前{project.source_kind === 'video' ? '视频' : '录音'}</span><div className="project-name"><h2 title={project.name}>{project.name}</h2><span className={`status-chip ${status}`}>{statusText(project.status)}</span></div><small>{clock(duration || project.duration || 0)} · {project.segments.length} 个时间片段{project.source_kind === 'video' ? ' · 已提取音轨' : ''}</small></div><div className="exports"><span>导出文字稿</span>{([{format: 'md', label: 'Markdown'}, {format: 'srt', label: 'SRT 字幕'}] as const).map(({format, label}) => <button key={format} onClick={() => exportFile(format)} title={`导出 ${label}`}>{label}</button>)}<button disabled={transcribing || dirty || saving} onClick={async () => {try {await backupProject(project.id); setMessage('项目备份已下载，包含音频和历史版本')} catch (error) {setMessage((error as Error).message)}}}>项目备份</button><button disabled={transcribing || dirty || saving} onClick={async () => {if (!confirm('删除当前浏览器中的这个项目？请先下载项目备份。')) return; try {await deleteProject(project.id); projectRef.current = null; setProject(null); await refreshList()} catch (error) {setMessage((error as Error).message)}}}>删除</button></div></section>
           <section className="events-card" aria-label="处理记录"><div className="events-label"><span className="event-indicator"/>处理记录</div>{project.events?.length ? <ol className="event-list">{[...project.events].reverse().map((item, index) => <li key={`${item.at}-${index}`}><strong>{item.label}</strong><time dateTime={item.at} title={new Date(item.at).toLocaleString('zh-CN')}>{eventTime(item.at)}</time></li>)}</ol> : <span className="event-placeholder">此录音没有历史节点</span>}</section>
           <div className="workspace">
             <div className="audio-column">
@@ -416,10 +418,10 @@ export default function App() {
               <section className="card transcribe-card">
                 <button className="transcribe-toggle" type="button" aria-expanded={settingsOpen || transcribing} disabled={transcribing} onClick={() => setSettingsOpen(value => !value)}><span><strong>转写设置</strong><small>{transcribing ? `转写中 · ${percent}%` : status === 'ready' ? '选择模型并开始转写' : '模型、语言与重新转写'}</small></span><span className={`chevron ${settingsOpen || transcribing ? 'open' : ''}`}>⌄</span></button>
                 {(settingsOpen || transcribing) && <div className="settings-body">
-                  <div className="transcribe-controls"><label>引擎<select value={engine} disabled={transcribing} onChange={event => setEngine(event.target.value as 'mlx' | 'faster')}><option value="mlx">MLX Whisper</option><option value="faster">faster-whisper</option></select></label><label>模型<select value={model} aria-describedby="model-description" disabled={transcribing} onChange={event => {const next = event.target.value; setModel(next); if (next !== 'large-v3' && language === 'yue') setLanguage('zh')}}>{modelChoices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</select></label><label>语言<select value={language} disabled={transcribing} onChange={event => setLanguage(event.target.value)}><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="auto">自动识别</option><option value="yue" disabled={model !== 'large-v3'}>粤语（large-v3）</option></select></label></div>
+                  <div className="transcribe-controls"><label>引擎<select value={engine} disabled={transcribing} onChange={event => setEngine(event.target.value as 'webgpu' | 'wasm')}><option value="wasm">浏览器 CPU</option><option value="webgpu" disabled={!health?.webgpu}>浏览器 GPU（试验）</option></select></label><label>模型<select value={model} aria-describedby="model-description" disabled={transcribing} onChange={event => {const next = event.target.value; setModel(next); }}>{modelChoices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</select></label><label>语言<select value={language} disabled={transcribing} onChange={event => setLanguage(event.target.value)}><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="auto">自动识别</option></select></label></div>
                   <div id="model-description" className="model-description" aria-live="polite"><div><strong>{selectedModel.label}</strong><span>模型文件 {selectedModel.size}</span></div><p>{selectedModel.description}</p><small>{selectedModel.tradeoff} · 文件大小不等于运行内存</small></div>
-                  <p className="language-note">地方口音可先选「中文」；粤语建议使用 large-v3。</p><div className="task-actions"><button className="primary" disabled={busy || transcribing || dirty} onClick={transcribe}>{status === 'done' || status === 'cancelled' ? '重新转写' : transcribing ? '正在转写…' : '开始转写'}</button>{transcribing && <button className="danger" disabled={busy || status === 'cancelling'} onClick={cancel}>{status === 'cancelling' ? '正在终止…' : '终止转写'}</button>}</div>
-                  {transcribing && <div className="progress-wrap"><div className="progress-label"><span>{status === 'queued' ? '正在启动模型…' : status === 'cancelling' ? '正在终止…' : `正在转写 · 已输出 ${project.segments.length} 段`}</span><strong>{percent}%</strong></div><div className="progress-track" role="progressbar" aria-label="转写进度" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><div style={{width: `${percent}%`}}/></div></div>}
+                  <p className="language-note">模型保存在这台电脑的浏览器缓存中。转写时请保持页面打开；CPU 速度取决于本机性能。</p><div className="task-actions"><button className="primary" disabled={busy || transcribing || dirty} onClick={transcribe}>{status === 'done' || status === 'cancelled' ? '重新转写' : transcribing ? '正在转写…' : '开始转写'}</button>{transcribing && <button className="danger" disabled={busy || status === 'cancelling'} onClick={cancel}>{status === 'cancelling' ? '正在终止…' : '终止转写'}</button>}</div>
+                  {transcribing && <div className="progress-wrap"><div className="progress-label"><span>{status === 'queued' ? (project.modelStatus || '正在启动模型…') : status === 'cancelling' ? '正在终止…' : `正在转写 · 已输出 ${project.segments.length} 段`}</span><strong>{percent}%</strong></div><div className="progress-track" role="progressbar" aria-label="转写进度" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><div style={{width: `${percent}%`}}/></div></div>}
                   {status === 'cancelled' && <p className="hint">转写已终止，已完成的内容可以编辑和导出。</p>}{project.error && <p className="error">{project.error}</p>}
                 </div>}
               </section>

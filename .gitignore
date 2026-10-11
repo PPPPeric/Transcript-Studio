@@ -33,3 +33,8 @@ Thumbs.db
 /build/
 /dist/
 /release/
+.runtime/
+frontend/.npm-local/
+.browser-models/
+frontend/test-results/
+frontend/playwright-report/
